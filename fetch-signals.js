@@ -109,7 +109,7 @@ function supabasePost(records) {
         apikey: SUPABASE_KEY,
         Authorization: "Bearer " + SUPABASE_KEY,
         "Content-Type": "application/json",
-        Prefer: "resolution=ignore-duplicates",
+        Prefer: "resolution=ignore-duplicates,return=representation",
         "Content-Length": Buffer.byteLength(postData),
       },
     };
@@ -118,7 +118,14 @@ function supabasePost(records) {
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(res.statusCode);
+          let inserted = 0;
+          try {
+            const parsed = JSON.parse(data);
+            inserted = Array.isArray(parsed) ? parsed.length : 0;
+          } catch (e) {
+            inserted = 0;
+          }
+          resolve(inserted);
         } else {
           reject(new Error(`Supabase ${res.statusCode}: ${data}`));
         }
@@ -132,7 +139,7 @@ function supabasePost(records) {
 
 async function fetchQuery(query) {
   const encoded = encodeURIComponent(query);
-  const url = `https://news.google.com/rss/search?q=${encoded}&hl=en&gl=US&ceid=US:en`;
+  const url = `https://news.google.com/rss/search?q=${encoded}&hl=en&gl=US&ceid=US:en&when=7d`;
   try {
     const xml = await fetchUrl(url);
     return parseRSS(xml);
@@ -184,17 +191,21 @@ async function main() {
   }
 
   // Insert in batches of 50
+  let totalNew = 0;
+  let totalSkipped = 0;
   for (let i = 0; i < allItems.length; i += 50) {
     const batch = allItems.slice(i, i + 50);
     try {
-      const status = await supabasePost(batch);
-      console.log(`Inserted batch ${Math.floor(i / 50) + 1}: ${batch.length} items (${status})`);
+      const inserted = await supabasePost(batch);
+      totalNew += inserted;
+      totalSkipped += batch.length - inserted;
+      console.log(`Batch ${Math.floor(i / 50) + 1}: ${inserted} new, ${batch.length - inserted} duplicates`);
     } catch (e) {
       console.error(`Batch insert error: ${e.message}`);
     }
   }
 
-  console.log("Done.");
+  console.log(`Done. ${totalNew} new signals, ${totalSkipped} duplicates skipped.`);
 }
 
 main();
