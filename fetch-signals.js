@@ -96,7 +96,7 @@ function supabasePost(records) {
     const postData = JSON.stringify(records);
     const options = {
       hostname: "yljybhpxmfaremvmdkgm.supabase.co",
-      path: "/rest/v1/signals_raw",
+      path: "/rest/v1/signals_raw?on_conflict=title,source",
       method: "POST",
       headers: {
         apikey: SUPABASE_KEY,
