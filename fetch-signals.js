@@ -43,7 +43,7 @@ function parseRSS(xml) {
     const source = (block.match(/<source[^>]*>([\s\S]*?)<\/source>/) || [])[1] || "";
     items.push({
       title: decodeEntities(title).trim(),
-      link: cleanGoogleLink(link.trim()),
+      link: link.trim(),
       source: decodeEntities(source).trim(),
       published_at: pubDate ? new Date(pubDate).toISOString() : null,
     });
@@ -58,13 +58,6 @@ function decodeEntities(str) {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'");
-}
-
-function cleanGoogleLink(url) {
-  // Google News wraps links; extract actual URL if possible
-  const match = url.match(/url=([^&]+)/);
-  if (match) return decodeURIComponent(match[1]);
-  return url;
 }
 
 function supabaseDelete(olderThanDays) {
@@ -169,13 +162,14 @@ async function main() {
 
   console.log(`Fetching signals for ${QUERIES.length} queries...`);
   const allItems = [];
-  const seenLinks = new Set();
+  const seenKeys = new Set();
 
   for (const query of QUERIES) {
     const items = await fetchQuery(query);
     for (const item of items) {
-      if (!seenLinks.has(item.link) && item.link) {
-        seenLinks.add(item.link);
+      const key = `${item.title}|||${item.source}`;
+      if (!seenKeys.has(key) && item.title) {
+        seenKeys.add(key);
         allItems.push({ ...item, query });
       }
     }
