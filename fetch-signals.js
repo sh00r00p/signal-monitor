@@ -4,6 +4,7 @@ const SUPABASE_URL = "https://yljybhpxmfaremvmdkgm.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
 const QUERIES = [
+  // --- existing ---
   '"data center" water consumption OR shortage OR restriction',
   '"water rights" acquisition OR sale OR trading',
   'aquifer depletion OR contamination 2026',
@@ -14,6 +15,15 @@ const QUERIES = [
   'water futures price OR trading CME',
   '"data center" moratorium OR ban OR protest',
   'desalination plant OR project 2026',
+  // --- new: water rights data & governance ---
+  '"water rights" concentration OR inequality OR Gini',
+  '"paper water" OR "face value" water rights',
+  'SGMA enforcement OR "land retirement" OR "fallowed acreage"',
+  'CalWATRS OR eWRIMS OR "water rights database"',
+  '"pre-1914" water rights California',
+  // --- new: emerging from signal analysis ---
+  'water infrastructure military target OR attack',
+  'snowpack record low 2026',
 ];
 
 function fetchUrl(url) {
