@@ -3,27 +3,33 @@ const https = require("https");
 const SUPABASE_URL = "https://yljybhpxmfaremvmdkgm.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
+// Per-query: { q: search string, geo?: locale code }
+// geo present  -> &gl=XX&ceid=XX:en (US-specific topics)
+// geo absent   -> global English (no gl param)
 const QUERIES = [
-  // --- existing ---
-  '"data center" water consumption OR shortage OR restriction',
-  '"water rights" acquisition OR sale OR trading',
-  'aquifer depletion OR contamination 2026',
-  '"water stress" city OR region OR crisis',
-  '"cooling water" regulation OR ban OR moratorium',
-  'drought emergency declaration 2026',
-  '"network state" land OR infrastructure OR physical',
-  'water futures price OR trading CME',
-  '"data center" moratorium OR ban OR protest',
-  'desalination plant OR project 2026',
-  // --- new: water rights data & governance ---
-  '"water rights" concentration OR inequality OR Gini',
-  '"paper water" OR "face value" water rights',
-  'SGMA enforcement OR "land retirement" OR "fallowed acreage"',
-  'CalWATRS OR eWRIMS OR "water rights database"',
-  '"pre-1914" water rights California',
-  // --- new: emerging from signal analysis ---
-  'water infrastructure military target OR attack',
-  'snowpack record low 2026',
+  // === US-specific: California water rights jurisdiction ===
+  { q: '"pre-1914" water rights', geo: "US" },
+  { q: "CalWATRS OR eWRIMS", geo: "US" },
+  { q: 'SGMA enforcement OR "groundwater sustainability plan"', geo: "US" },
+  { q: '"water rights" curtailment OR senior OR junior', geo: "US" },
+  { q: '"paper water" OR "face value" water', geo: "US" },
+
+  // === Global English ===
+  { q: '"water rights" acquisition OR sale OR trading' },
+  { q: 'aquifer depletion OR overdraft OR "groundwater decline"' },
+  { q: '"water stress" crisis OR "Day Zero"' },
+  { q: "drought emergency declaration" },
+  { q: 'snowpack record low OR "below average"' },
+  { q: '"data center" moratorium OR ban OR protest' },
+  { q: '"data center" water OR cooling impact community' },
+  { q: '"interconnection queue" OR "transformer shortage"' },
+  { q: '"data center" rate hike OR surcharge OR "utility cost"' },
+  { q: "water infrastructure attack OR sabotage OR cyberattack" },
+
+  // === Central Asia / CIS (KZ + cascade signals) ===
+  { q: "Caspian Sea level OR shrink OR shallowing" },
+  { q: 'Aral Sea OR "Syr Darya" OR "Amu Darya"' },
+  { q: "Kazakhstan water OR Balkhash OR Ili river" },
 ];
 
 function fetchUrl(url) {
@@ -140,14 +146,15 @@ function supabasePost(records) {
   });
 }
 
-async function fetchQuery(query) {
-  const encoded = encodeURIComponent(query);
-  const url = `https://news.google.com/rss/search?q=${encoded}&hl=en&gl=US&ceid=US:en&when=7d`;
+async function fetchQuery({ q, geo }) {
+  const encoded = encodeURIComponent(q);
+  let url = `https://news.google.com/rss/search?q=${encoded}&hl=en&when=7d`;
+  if (geo) url += `&gl=${geo}&ceid=${geo}:en`;
   try {
     const xml = await fetchUrl(url);
     return parseRSS(xml);
   } catch (e) {
-    console.error(`Failed to fetch "${query}": ${e.message}`);
+    console.error(`Failed to fetch "${q}": ${e.message}`);
     return [];
   }
 }
@@ -174,16 +181,17 @@ async function main() {
   const allItems = [];
   const seenKeys = new Set();
 
-  for (const query of QUERIES) {
-    const items = await fetchQuery(query);
+  for (const entry of QUERIES) {
+    const items = await fetchQuery(entry);
     for (const item of items) {
       const key = `${item.title}|||${item.source}`;
       if (!seenKeys.has(key) && item.title) {
         seenKeys.add(key);
-        allItems.push({ ...item, query });
+        allItems.push({ ...item, query: entry.q });
       }
     }
-    console.log(`  "${query.substring(0, 40)}..." -> ${items.length} items`);
+    const tag = entry.geo ? `[${entry.geo}]` : "[global]";
+    console.log(`  ${tag} "${entry.q.substring(0, 40)}..." -> ${items.length} items`);
     await sleep(1000); // rate limit
   }
 
