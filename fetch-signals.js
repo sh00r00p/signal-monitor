@@ -12,7 +12,7 @@ const QUERIES = [
   { q: "CalWATRS OR eWRIMS", geo: "US" },
   { q: 'SGMA enforcement OR "groundwater sustainability plan"', geo: "US" },
   { q: '"water rights" curtailment OR senior OR junior', geo: "US" },
-  { q: '"paper water" OR "face value" water', geo: "US" },
+  { q: '"paper water" OR "wet water" water rights', geo: "US" },
 
   // === Global English ===
   { q: '"water rights" acquisition OR sale OR trading' },
@@ -23,7 +23,7 @@ const QUERIES = [
   { q: '"data center" moratorium OR ban OR protest' },
   { q: '"data center" water OR cooling impact community' },
   { q: '"interconnection queue" OR "transformer shortage"' },
-  { q: '"data center" rate hike OR surcharge OR "utility cost"' },
+  { q: '"data center" "rate case" OR "large load tariff" OR "special rate class" OR "electric rate"' },
   { q: "water infrastructure attack OR sabotage OR cyberattack" },
 
   // === Central Asia / CIS (KZ + cascade signals) ===
@@ -76,10 +76,68 @@ function decodeEntities(str) {
     .replace(/&#39;/g, "'");
 }
 
+const TITLE_STOPWORDS = new Set(
+  "a an the of to in on for and or is are was were as at by with from its it this that new says say said after over amid into be been will would could can may might not no than then them they he she his her you your we our us".split(" ")
+);
+
+// Google News titles carry a " - Outlet" suffix; strip it, then reduce to a
+// content-word set so the same story filed by two outlets collapses to one.
+function titleTokens(title) {
+  return new Set(
+    title
+      .replace(/\s+-\s+[^-]{2,40}$/, "")
+      .toLowerCase()
+      .replace(/[\u2019']/g, "")
+      .replace(/[^a-z0-9%.]+/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !TITLE_STOPWORDS.has(w))
+  );
+}
+
+const MONTHS = new Set(
+  "january february march april may june july august september october november december".split(" ")
+);
+
+// Recurring reports reuse one title and differ only by date
+// ("Snow Drought ... | April 9, 2026" vs "... | March 12, 2026"). Those are
+// distinct editions, so a date mismatch blocks the merge outright.
+function dateMarkers(tokens) {
+  const marks = new Set();
+  for (const t of tokens) {
+    if (MONTHS.has(t)) marks.add(t);
+    else if (/^(19|20)\d{2}$/.test(t)) marks.add(t);
+  }
+  return marks;
+}
+
+function sameDateMarkers(a, b) {
+  const ma = dateMarkers(a), mb = dateMarkers(b);
+  if (ma.size !== mb.size) return false;
+  for (const t of ma) if (!mb.has(t)) return false;
+  return true;
+}
+
+function jaccard(a, b) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+// 0.7 is deliberately strict. Measured on a real day of output (1197 items):
+// 0.7 drops 2.3% with no false merges observed; 0.6 drops 2.8% but merged two
+// distinct state drought declarations (Colorado / Idaho). Differently-worded
+// coverage of one story does NOT collapse here -- that needs content-level
+// clustering, not title matching.
+const TITLE_SIM_THRESHOLD = 0.7;
+
 function supabaseDelete(olderThanDays) {
   return new Promise((resolve, reject) => {
     const cutoff = new Date(Date.now() - olderThanDays * 86400000).toISOString();
     const path = `/rest/v1/signals_raw?created_at=lt.${cutoff}&is_relevant=is.null`;
+    // NOTE: rows are only ever kept by this cleanup if is_relevant has been set.
+    // Nothing sets it automatically, so in practice the table is a rolling
+    // RETENTION_DAYS window. Mark rows you want to keep (is_relevant = true).
     const options = {
       hostname: "yljybhpxmfaremvmdkgm.supabase.co",
       path,
@@ -87,7 +145,7 @@ function supabaseDelete(olderThanDays) {
       headers: {
         apikey: SUPABASE_KEY,
         Authorization: "Bearer " + SUPABASE_KEY,
-        Prefer: "return=headers-only",
+        Prefer: "return=headers-only,count=exact",
       },
     };
     const req = https.request(options, (res) => {
@@ -169,10 +227,11 @@ async function main() {
     process.exit(1);
   }
 
-  // Cleanup: delete unreviewed signals older than 90 days
+  // Cleanup: delete unreviewed signals older than RETENTION_DAYS (default 90).
+  const retentionDays = Number(process.env.RETENTION_DAYS || 90);
   try {
-    const result = await supabaseDelete(90);
-    console.log(`Cleanup (>90 days, unreviewed): ${result}`);
+    const result = await supabaseDelete(retentionDays);
+    console.log(`Cleanup (>${retentionDays} days, unreviewed): ${result}`);
   } catch (e) {
     console.error(`Cleanup error: ${e.message}`);
   }
@@ -181,19 +240,32 @@ async function main() {
   const allItems = [];
   const seenKeys = new Set();
 
+  let totalReprints = 0;
+
   for (const entry of QUERIES) {
     const items = await fetchQuery(entry);
+    const queryTokens = []; // reprint detection is per-query, not global
+    let reprints = 0;
     for (const item of items) {
+      if (!item.title) continue;
       const key = `${item.title}|||${item.source}`;
-      if (!seenKeys.has(key) && item.title) {
-        seenKeys.add(key);
-        allItems.push({ ...item, query: entry.q });
+      if (seenKeys.has(key)) continue;
+      const tokens = titleTokens(item.title);
+      if (queryTokens.some((t) => jaccard(t, tokens) >= TITLE_SIM_THRESHOLD && sameDateMarkers(t, tokens))) {
+        reprints++;
+        continue;
       }
+      queryTokens.push(tokens);
+      seenKeys.add(key);
+      allItems.push({ ...item, query: entry.q });
     }
+    totalReprints += reprints;
     const tag = entry.geo ? `[${entry.geo}]` : "[global]";
-    console.log(`  ${tag} "${entry.q.substring(0, 40)}..." -> ${items.length} items`);
+    console.log(`  ${tag} "${entry.q.substring(0, 40)}..." -> ${items.length} items, ${reprints} reprints`);
     await sleep(1000); // rate limit
   }
+
+  console.log(`Reprints collapsed: ${totalReprints}`);
 
   console.log(`Total unique items: ${allItems.length}`);
 

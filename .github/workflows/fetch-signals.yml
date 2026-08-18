@@ -5,6 +5,10 @@ on:
     - cron: '0 6 * * *'  # Daily at 06:00 UTC
   workflow_dispatch: {}   # Manual trigger
 
+# Needed by the heartbeat step below.
+permissions:
+  contents: write
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
@@ -17,3 +21,27 @@ jobs:
         env:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node fetch-signals.js
+
+      # GitHub disables scheduled workflows in public repos after 60 days with
+      # no repository activity, silently. That happened on 2026-07-08 and cost
+      # 41 days of collection. A weekly commit keeps the inactivity clock reset.
+      - name: Heartbeat (keeps the schedule from being auto-disabled)
+        if: github.event_name == 'schedule'
+        run: |
+          set -euo pipefail
+          # Compare the RECORDED timestamp, not the file mtime: a fresh checkout
+          # always stamps mtime with the current run.
+          now=$(date -u +%s)
+          if [ -f .last-run ]; then
+            prev=$(date -u -d "$(cat .last-run)" +%s 2>/dev/null || echo 0)
+            if [ "$prev" -gt 0 ] && [ $((now - prev)) -lt 518400 ]; then
+              echo "heartbeat is $(( (now - prev) / 86400 ))d old (<6d), skipping commit"
+              exit 0
+            fi
+          fi
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .last-run
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .last-run
+          git commit -m "chore: heartbeat $(cat .last-run)" || { echo "nothing to commit"; exit 0; }
+          git push
